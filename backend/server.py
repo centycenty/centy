@@ -310,7 +310,7 @@ async def create_voting_session(input: LiveVotingCreate):
     
     # Broadcast to all clients in the competition
     await manager.broadcast_to_room(
-        json.dumps({
+        safe_json_dumps({
             "type": "voting_started",
             "voting_session": voting_session.dict()
         }),
