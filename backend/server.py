@@ -456,7 +456,7 @@ async def send_message(input: MessageCreate):
     
     # Broadcast to room
     await manager.broadcast_to_room(
-        json.dumps({"type": "new_message", "message": message.dict()}),
+        safe_json_dumps({"type": "new_message", "message": message.dict()}),
         input.competition_id
     )
     
