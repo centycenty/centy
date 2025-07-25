@@ -416,7 +416,7 @@ async def cast_vote(input: VoteCreate):
     
     # Broadcast vote update
     await manager.broadcast_to_room(
-        json.dumps({"type": "new_vote", "vote": vote.dict()}),
+        safe_json_dumps({"type": "new_vote", "vote": vote.dict()}),
         input.competition_id
     )
     
