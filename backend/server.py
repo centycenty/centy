@@ -294,7 +294,7 @@ async def end_competition(competition_id: str):
     
     # Broadcast to room
     await manager.broadcast_to_room(
-        json.dumps({"type": "competition_ended", "competition_id": competition_id}),
+        safe_json_dumps({"type": "competition_ended", "competition_id": competition_id}),
         competition_id
     )
     
