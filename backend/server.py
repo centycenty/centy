@@ -343,7 +343,7 @@ async def submit_live_vote(input: LiveVoteSubmit):
         
         # Broadcast updated results
         await manager.broadcast_to_room(
-            json.dumps({
+            safe_json_dumps({
                 "type": "voting_update",
                 "voting_session": voting_session.dict()
             }),
