@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
+import { BrowserRouter, Routes, Route, Link, useNavigate } from "react-router-dom";
 import "./App.css";
 import axios from "axios";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -20,6 +22,711 @@ const mockModerator = {
   username: "HostMaster",
   avatar: "https://images.unsplash.com/photo-1560250097-0b93528c311a?w=150&h=150&fit=crop&crop=face",
   isStreaming: true
+};
+
+// Live Voting Board Component
+const LiveVotingBoard = ({ competitionId, isAdmin = false }) => {
+  const [activeVoting, setActiveVoting] = useState(null);
+  const [votingQuestion, setVotingQuestion] = useState('');
+  const [votingOptions, setVotingOptions] = useState(['Option A', 'Option B', 'Option C']);
+  const [userVote, setUserVote] = useState(null);
+  const [currentUserId] = useState('user_' + Math.random().toString(36).substr(2, 9));
+
+  useEffect(() => {
+    // Simulate getting active voting session
+    const mockVoting = {
+      id: "voting_1",
+      competition_id: competitionId,
+      question: "Who has the best performance so far?",
+      options: ["DanceStar99", "SingingQueen", "TalentKing"],
+      votes: {
+        "DanceStar99": 45,
+        "SingingQueen": 38,
+        "TalentKing": 52
+      },
+      is_active: true
+    };
+    setActiveVoting(mockVoting);
+  }, [competitionId]);
+
+  const startVoting = async () => {
+    try {
+      const response = await axios.post(`${API}/voting/create`, {
+        competition_id: competitionId,
+        question: votingQuestion,
+        options: votingOptions.filter(opt => opt.trim() !== '')
+      });
+      setActiveVoting(response.data);
+      setVotingQuestion('');
+    } catch (error) {
+      console.error('Error starting voting:', error);
+    }
+  };
+
+  const submitVote = async (option) => {
+    if (userVote) return; // Already voted
+
+    try {
+      await axios.post(`${API}/voting/submit`, {
+        voting_session_id: activeVoting.id,
+        voter_id: currentUserId,
+        selected_option: option
+      });
+      setUserVote(option);
+      
+      // Update local state (in real app, this would come via WebSocket)
+      setActiveVoting(prev => ({
+        ...prev,
+        votes: {
+          ...prev.votes,
+          [option]: prev.votes[option] + 1
+        }
+      }));
+    } catch (error) {
+      console.error('Error submitting vote:', error);
+    }
+  };
+
+  const endVoting = async () => {
+    try {
+      await axios.post(`${API}/voting/${activeVoting.id}/end`);
+      setActiveVoting(prev => ({ ...prev, is_active: false }));
+    } catch (error) {
+      console.error('Error ending voting:', error);
+    }
+  };
+
+  const addOption = () => {
+    setVotingOptions([...votingOptions, '']);
+  };
+
+  const updateOption = (index, value) => {
+    const newOptions = [...votingOptions];
+    newOptions[index] = value;
+    setVotingOptions(newOptions);
+  };
+
+  const removeOption = (index) => {
+    if (votingOptions.length > 2) {
+      setVotingOptions(votingOptions.filter((_, i) => i !== index));
+    }
+  };
+
+  const totalVotes = activeVoting ? Object.values(activeVoting.votes).reduce((sum, count) => sum + count, 0) : 0;
+
+  return (
+    <div className="bg-gray-900 rounded-2xl border border-gray-700 p-6 shadow-2xl">
+      <div className="flex items-center justify-between mb-6">
+        <h3 className="text-2xl font-bold text-white flex items-center gap-2">
+          🗳️ Live Voting
+          {activeVoting?.is_active && (
+            <span className="bg-red-500 text-white text-xs px-3 py-1 rounded-full animate-pulse">
+              LIVE
+            </span>
+          )}
+        </h3>
+        {totalVotes > 0 && (
+          <div className="bg-purple-600/20 text-purple-300 px-4 py-2 rounded-full">
+            {totalVotes} votes
+          </div>
+        )}
+      </div>
+
+      {/* Admin Controls */}
+      {isAdmin && (
+        <div className="bg-gray-800 rounded-xl p-4 mb-6">
+          <h4 className="text-white font-bold mb-3">🔧 Admin Controls</h4>
+          
+          {!activeVoting?.is_active && (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-gray-300 text-sm font-bold mb-2">
+                  Voting Question
+                </label>
+                <input
+                  type="text"
+                  value={votingQuestion}
+                  onChange={(e) => setVotingQuestion(e.target.value)}
+                  placeholder="Enter your voting question..."
+                  className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white placeholder-gray-400 focus:outline-none focus:border-purple-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-gray-300 text-sm font-bold mb-2">
+                  Voting Options
+                </label>
+                {votingOptions.map((option, index) => (
+                  <div key={index} className="flex gap-2 mb-2">
+                    <input
+                      type="text"
+                      value={option}
+                      onChange={(e) => updateOption(index, e.target.value)}
+                      placeholder={`Option ${index + 1}`}
+                      className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white placeholder-gray-400 focus:outline-none focus:border-purple-500"
+                    />
+                    {votingOptions.length > 2 && (
+                      <button
+                        onClick={() => removeOption(index)}
+                        className="bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-lg"
+                      >
+                        ❌
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <button
+                  onClick={addOption}
+                  className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm"
+                >
+                  ➕ Add Option
+                </button>
+              </div>
+
+              <button
+                onClick={startVoting}
+                disabled={!votingQuestion || votingOptions.filter(opt => opt.trim()).length < 2}
+                className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-600 text-white py-3 px-6 rounded-xl font-bold transition-all duration-200"
+              >
+                🚀 Start Voting
+              </button>
+            </div>
+          )}
+
+          {activeVoting?.is_active && (
+            <div className="flex gap-4">
+              <button
+                onClick={endVoting}
+                className="bg-red-600 hover:bg-red-700 text-white py-2 px-6 rounded-lg font-bold"
+              >
+                🛑 End Voting
+              </button>
+              <div className="bg-green-600/20 text-green-400 px-4 py-2 rounded-lg">
+                Voting is live!
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Active Voting Display */}
+      {activeVoting && (
+        <div>
+          <div className="bg-gray-800 rounded-xl p-4 mb-4">
+            <h4 className="text-white font-bold mb-3">{activeVoting.question}</h4>
+            
+            {activeVoting.is_active && !userVote ? (
+              <div className="space-y-3">
+                {activeVoting.options.map((option, index) => (
+                  <button
+                    key={option}
+                    onClick={() => submitVote(option)}
+                    className="w-full bg-gray-700 hover:bg-purple-600 text-white py-3 px-4 rounded-lg transition-all duration-200 text-left flex items-center justify-between"
+                  >
+                    <span>{option}</span>
+                    <span className="text-purple-300">{activeVoting.votes[option] || 0} votes</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {activeVoting.options.map((option, index) => {
+                  const voteCount = activeVoting.votes[option] || 0;
+                  const percentage = totalVotes > 0 ? (voteCount / totalVotes) * 100 : 0;
+                  const isUserChoice = userVote === option;
+                  
+                  return (
+                    <div key={option} className={`bg-gray-700 rounded-lg p-4 ${isUserChoice ? 'ring-2 ring-purple-500' : ''}`}>
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-white font-semibold">
+                          {option}
+                          {isUserChoice && <span className="ml-2 text-purple-400">✓ Your vote</span>}
+                        </span>
+                        <span className="text-gray-300">{voteCount} votes</span>
+                      </div>
+                      <div className="w-full bg-gray-600 rounded-full h-2">
+                        <div 
+                          className="bg-gradient-to-r from-purple-500 to-pink-500 h-2 rounded-full transition-all duration-500"
+                          style={{ width: `${percentage}%` }}
+                        />
+                      </div>
+                      <div className="text-right text-gray-400 text-sm mt-1">
+                        {percentage.toFixed(1)}%
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {!activeVoting && !isAdmin && (
+        <div className="text-center py-8">
+          <div className="text-6xl mb-4">🗳️</div>
+          <p className="text-gray-400">No active voting session</p>
+          <p className="text-gray-500 text-sm">Wait for the admin to start a vote</p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Admin Dashboard Component
+const AdminDashboard = () => {
+  const [activeTab, setActiveTab] = useState('overview');
+  const [stats, setStats] = useState({
+    total_users: 1247,
+    active_competitions: 3,
+    total_votes: 5823,
+    total_messages: 12456,
+    banned_users: 12
+  });
+
+  const mockUsers = [
+    { id: '1', username: 'DanceStar99', email: 'dance@example.com', role: 'participant', is_banned: false, created_at: '2024-01-15' },
+    { id: '2', username: 'SingingQueen', email: 'sing@example.com', role: 'participant', is_banned: false, created_at: '2024-01-20' },
+    { id: '3', username: 'BadUser123', email: 'bad@example.com', role: 'viewer', is_banned: true, created_at: '2024-01-10' },
+  ];
+
+  const mockCompetitions = [
+    { id: '1', title: 'Talent Show Championship', status: 'active', participants: 6, created_at: '2024-01-25' },
+    { id: '2', title: 'Dance Battle Royale', status: 'waiting', participants: 4, created_at: '2024-01-24' },
+    { id: '3', title: 'Comedy Night', status: 'ended', participants: 8, created_at: '2024-01-20' },
+  ];
+
+  const chartData = [
+    { name: 'Jan', users: 400, votes: 2400 },
+    { name: 'Feb', users: 300, votes: 1398 },
+    { name: 'Mar', users: 200, votes: 9800 },
+    { name: 'Apr', users: 278, votes: 3908 },
+    { name: 'May', users: 189, votes: 4800 },
+  ];
+
+  const pieData = [
+    { name: 'Participants', value: 45, color: '#8b5cf6' },
+    { name: 'Viewers', value: 40, color: '#ec4899' },
+    { name: 'Moderators', value: 10, color: '#10b981' },
+    { name: 'Admins', value: 5, color: '#f59e0b' },
+  ];
+
+  const banUser = async (userId) => {
+    try {
+      await axios.post(`${API}/users/${userId}/ban`, { admin_id: 'admin_1' });
+      // In real app, refresh the user list
+    } catch (error) {
+      console.error('Error banning user:', error);
+    }
+  };
+
+  const unbanUser = async (userId) => {
+    try {
+      await axios.post(`${API}/users/${userId}/unban`, { admin_id: 'admin_1' });
+      // In real app, refresh the user list
+    } catch (error) {
+      console.error('Error unbanning user:', error);
+    }
+  };
+
+  const startCompetition = async (competitionId) => {
+    try {
+      await axios.post(`${API}/competitions/${competitionId}/start`);
+      // In real app, refresh the competition list
+    } catch (error) {
+      console.error('Error starting competition:', error);
+    }
+  };
+
+  const endCompetition = async (competitionId) => {
+    try {
+      await axios.post(`${API}/competitions/${competitionId}/end`);
+      // In real app, refresh the competition list
+    } catch (error) {
+      console.error('Error ending competition:', error);
+    }
+  };
+
+  const tabs = [
+    { id: 'overview', name: 'Overview', icon: '📊' },
+    { id: 'competitions', name: 'Competitions', icon: '🏆' },
+    { id: 'users', name: 'Users', icon: '👥' },
+    { id: 'voting', name: 'Live Voting', icon: '🗳️' },
+    { id: 'moderation', name: 'Moderation', icon: '🛡️' },
+    { id: 'analytics', name: 'Analytics', icon: '📈' },
+  ];
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900">
+      {/* Admin Header */}
+      <header className="bg-black/50 backdrop-blur-md border-b border-purple-500/30 p-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="text-3xl">🎛️</div>
+            <div>
+              <h1 className="text-2xl font-bold text-white">Admin Dashboard</h1>
+              <p className="text-purple-300 text-sm">TikTok Live Competition Management</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <Link 
+              to="/" 
+              className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg transition-colors duration-200"
+            >
+              🔙 Back to App
+            </Link>
+            <div className="flex items-center gap-2 bg-green-600/20 text-green-400 px-4 py-2 rounded-full border border-green-500/50">
+              <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+              <span className="text-sm font-semibold">Admin Online</span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div className="max-w-7xl mx-auto p-6">
+        {/* Tab Navigation */}
+        <div className="flex flex-wrap gap-2 mb-8">
+          {tabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-2 px-6 py-3 rounded-xl font-semibold transition-all duration-200 ${
+                activeTab === tab.id
+                  ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-lg'
+                  : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+              }`}
+            >
+              <span>{tab.icon}</span>
+              <span>{tab.name}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Tab Content */}
+        {activeTab === 'overview' && (
+          <div className="space-y-8">
+            {/* Stats Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-6">
+              <div className="bg-gradient-to-br from-blue-600 to-blue-800 rounded-2xl p-6 text-white">
+                <div className="text-3xl font-bold">{stats.total_users.toLocaleString()}</div>
+                <div className="text-blue-200">Total Users</div>
+                <div className="text-green-300 text-sm mt-2">↗️ +12% this week</div>
+              </div>
+              <div className="bg-gradient-to-br from-green-600 to-green-800 rounded-2xl p-6 text-white">
+                <div className="text-3xl font-bold">{stats.active_competitions}</div>
+                <div className="text-green-200">Active Competitions</div>
+                <div className="text-green-300 text-sm mt-2">🔥 Live now</div>
+              </div>
+              <div className="bg-gradient-to-br from-purple-600 to-purple-800 rounded-2xl p-6 text-white">
+                <div className="text-3xl font-bold">{stats.total_votes.toLocaleString()}</div>
+                <div className="text-purple-200">Total Votes</div>
+                <div className="text-green-300 text-sm mt-2">↗️ +45% today</div>
+              </div>
+              <div className="bg-gradient-to-br from-pink-600 to-pink-800 rounded-2xl p-6 text-white">
+                <div className="text-3xl font-bold">{stats.total_messages.toLocaleString()}</div>
+                <div className="text-pink-200">Chat Messages</div>
+                <div className="text-green-300 text-sm mt-2">💬 Very active</div>
+              </div>
+              <div className="bg-gradient-to-br from-red-600 to-red-800 rounded-2xl p-6 text-white">
+                <div className="text-3xl font-bold">{stats.banned_users}</div>
+                <div className="text-red-200">Banned Users</div>
+                <div className="text-yellow-300 text-sm mt-2">🔒 Security active</div>
+              </div>
+            </div>
+
+            {/* Charts */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <div className="bg-gray-900 rounded-2xl border border-gray-700 p-6">
+                <h3 className="text-white text-xl font-bold mb-4">📈 Growth Analytics</h3>
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                    <XAxis dataKey="name" stroke="#9ca3af" />
+                    <YAxis stroke="#9ca3af" />
+                    <Tooltip 
+                      contentStyle={{ 
+                        backgroundColor: '#1f2937', 
+                        border: '1px solid #6366f1',
+                        borderRadius: '8px'
+                      }} 
+                    />
+                    <Bar dataKey="users" fill="#8b5cf6" />
+                    <Bar dataKey="votes" fill="#ec4899" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="bg-gray-900 rounded-2xl border border-gray-700 p-6">
+                <h3 className="text-white text-xl font-bold mb-4">👥 User Distribution</h3>
+                <ResponsiveContainer width="100%" height={300}>
+                  <PieChart>
+                    <Pie
+                      data={pieData}
+                      cx="50%"
+                      cy="50%"
+                      outerRadius={80}
+                      dataKey="value"
+                    >
+                      {pieData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.color} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="grid grid-cols-2 gap-4 mt-4">
+                  {pieData.map((entry, index) => (
+                    <div key={index} className="flex items-center gap-2">
+                      <div 
+                        className="w-4 h-4 rounded-full" 
+                        style={{ backgroundColor: entry.color }}
+                      ></div>
+                      <span className="text-gray-300 text-sm">{entry.name}: {entry.value}%</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'voting' && (
+          <div className="space-y-8">
+            <LiveVotingBoard competitionId="comp_1" isAdmin={true} />
+          </div>
+        )}
+
+        {activeTab === 'competitions' && (
+          <div className="bg-gray-900 rounded-2xl border border-gray-700 p-6">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-2xl font-bold text-white">🏆 Competition Management</h3>
+              <button className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-2 rounded-xl font-semibold">
+                ➕ New Competition
+              </button>
+            </div>
+            
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="border-b border-gray-700">
+                    <th className="text-gray-300 pb-4">Competition</th>
+                    <th className="text-gray-300 pb-4">Status</th>
+                    <th className="text-gray-300 pb-4">Participants</th>
+                    <th className="text-gray-300 pb-4">Created</th>
+                    <th className="text-gray-300 pb-4">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mockCompetitions.map(comp => (
+                    <tr key={comp.id} className="border-b border-gray-800">
+                      <td className="text-white py-4 font-semibold">{comp.title}</td>
+                      <td className="py-4">
+                        <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
+                          comp.status === 'active' ? 'bg-green-500/20 text-green-400' :
+                          comp.status === 'waiting' ? 'bg-yellow-500/20 text-yellow-400' :
+                          'bg-gray-500/20 text-gray-400'
+                        }`}>
+                          {comp.status.toUpperCase()}
+                        </span>
+                      </td>
+                      <td className="text-gray-300 py-4">{comp.participants}/6</td>
+                      <td className="text-gray-300 py-4">{comp.created_at}</td>
+                      <td className="py-4">
+                        <div className="flex gap-2">
+                          {comp.status === 'waiting' && (
+                            <button 
+                              onClick={() => startCompetition(comp.id)}
+                              className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm"
+                            >
+                              ▶️ Start
+                            </button>
+                          )}
+                          {comp.status === 'active' && (
+                            <button 
+                              onClick={() => endCompetition(comp.id)}
+                              className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm"
+                            >
+                              ⏹️ End
+                            </button>
+                          )}
+                          <button className="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1 rounded text-sm">
+                            ⚙️ Edit
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'users' && (
+          <div className="bg-gray-900 rounded-2xl border border-gray-700 p-6">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-2xl font-bold text-white">👥 User Management</h3>
+              <div className="flex gap-4">
+                <input
+                  type="text"
+                  placeholder="Search users..."
+                  className="bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-white placeholder-gray-400"
+                />
+                <select className="bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-white">
+                  <option>All Roles</option>
+                  <option>Participants</option>
+                  <option>Viewers</option>
+                  <option>Moderators</option>
+                </select>
+              </div>
+            </div>
+            
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="border-b border-gray-700">
+                    <th className="text-gray-300 pb-4">User</th>
+                    <th className="text-gray-300 pb-4">Email</th>
+                    <th className="text-gray-300 pb-4">Role</th>
+                    <th className="text-gray-300 pb-4">Status</th>
+                    <th className="text-gray-300 pb-4">Joined</th>
+                    <th className="text-gray-300 pb-4">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mockUsers.map(user => (
+                    <tr key={user.id} className="border-b border-gray-800">
+                      <td className="text-white py-4 font-semibold">{user.username}</td>
+                      <td className="text-gray-300 py-4">{user.email}</td>
+                      <td className="py-4">
+                        <span className="bg-purple-500/20 text-purple-400 px-3 py-1 rounded-full text-sm">
+                          {user.role}
+                        </span>
+                      </td>
+                      <td className="py-4">
+                        <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
+                          user.is_banned ? 'bg-red-500/20 text-red-400' : 'bg-green-500/20 text-green-400'
+                        }`}>
+                          {user.is_banned ? 'BANNED' : 'ACTIVE'}
+                        </span>
+                      </td>
+                      <td className="text-gray-300 py-4">{user.created_at}</td>
+                      <td className="py-4">
+                        <div className="flex gap-2">
+                          {user.is_banned ? (
+                            <button 
+                              onClick={() => unbanUser(user.id)}
+                              className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm"
+                            >
+                              ✅ Unban
+                            </button>
+                          ) : (
+                            <button 
+                              onClick={() => banUser(user.id)}
+                              className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm"
+                            >
+                              🚫 Ban
+                            </button>
+                          )}
+                          <button className="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1 rounded text-sm">
+                            👤 Profile
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'moderation' && (
+          <div className="space-y-6">
+            <div className="bg-gray-900 rounded-2xl border border-gray-700 p-6">
+              <h3 className="text-2xl font-bold text-white mb-4">🛡️ Content Moderation</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="bg-red-600/10 border border-red-600/30 rounded-xl p-4">
+                  <div className="text-red-400 text-2xl font-bold">23</div>
+                  <div className="text-red-300">Flagged Messages</div>
+                  <button className="mt-2 bg-red-600 text-white px-4 py-1 rounded text-sm">Review</button>
+                </div>
+                <div className="bg-yellow-600/10 border border-yellow-600/30 rounded-xl p-4">
+                  <div className="text-yellow-400 text-2xl font-bold">7</div>
+                  <div className="text-yellow-300">Pending Reports</div>
+                  <button className="mt-2 bg-yellow-600 text-white px-4 py-1 rounded text-sm">Review</button>
+                </div>
+                <div className="bg-blue-600/10 border border-blue-600/30 rounded-xl p-4">
+                  <div className="text-blue-400 text-2xl font-bold">156</div>
+                  <div className="text-blue-300">Auto-Moderated</div>
+                  <button className="mt-2 bg-blue-600 text-white px-4 py-1 rounded text-sm">View Log</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'analytics' && (
+          <div className="space-y-6">
+            <div className="bg-gray-900 rounded-2xl border border-gray-700 p-6">
+              <h3 className="text-2xl font-bold text-white mb-6">📈 Detailed Analytics</h3>
+              
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div>
+                  <h4 className="text-white text-lg font-bold mb-4">📊 Engagement Metrics</h4>
+                  <ResponsiveContainer width="100%" height={250}>
+                    <BarChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                      <XAxis dataKey="name" stroke="#9ca3af" />
+                      <YAxis stroke="#9ca3af" />
+                      <Tooltip 
+                        contentStyle={{ 
+                          backgroundColor: '#1f2937', 
+                          border: '1px solid #6366f1',
+                          borderRadius: '8px'
+                        }} 
+                      />
+                      <Bar dataKey="votes" fill="#8b5cf6" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div className="space-y-4">
+                  <h4 className="text-white text-lg font-bold">🎯 Key Performance Indicators</h4>
+                  <div className="space-y-3">
+                    <div className="bg-gray-800 rounded-lg p-4">
+                      <div className="flex justify-between">
+                        <span className="text-gray-300">Average Session Duration</span>
+                        <span className="text-white font-bold">15:42</span>
+                      </div>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-4">
+                      <div className="flex justify-between">
+                        <span className="text-gray-300">Participant Retention Rate</span>
+                        <span className="text-green-400 font-bold">87.3%</span>
+                      </div>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-4">
+                      <div className="flex justify-between">
+                        <span className="text-gray-300">Average Votes per Competition</span>
+                        <span className="text-purple-400 font-bold">1,247</span>
+                      </div>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-4">
+                      <div className="flex justify-between">
+                        <span className="text-gray-300">Peak Concurrent Viewers</span>
+                        <span className="text-blue-400 font-bold">3,456</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 };
 
 const VideoFeed = ({ participant, isModerator = false, onVote = null }) => {
@@ -275,6 +982,12 @@ const CompetitionControls = ({ competition, onStart, onEnd, onJoin }) => {
         >
           ➕ Join
         </button>
+        <Link
+          to="/admin"
+          className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white py-3 px-6 rounded-xl font-bold transition-all duration-200 hover:shadow-lg flex items-center gap-2"
+        >
+          🎛️ Admin
+        </Link>
       </div>
     </div>
   );
@@ -293,7 +1006,7 @@ const getRandomGradient = () => {
   return gradients[Math.floor(Math.random() * gradients.length)];
 };
 
-function App() {
+const LiveStreamApp = () => {
   const [competition, setCompetition] = useState({
     title: "Talent Show Championship",
     description: "Show off your best talents! Singing, dancing, comedy - all welcome!",
@@ -410,6 +1123,9 @@ function App() {
 
           {/* Sidebar */}
           <div className="lg:col-span-1 space-y-6">
+            {/* Live Voting Board */}
+            <LiveVotingBoard competitionId="comp_1" isAdmin={false} />
+            
             {/* Live Chat */}
             <ChatBox messages={messages} onSendMessage={handleSendMessage} />
 
@@ -441,6 +1157,17 @@ function App() {
         </div>
       </div>
     </div>
+  );
+};
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<LiveStreamApp />} />
+        <Route path="/admin" element={<AdminDashboard />} />
+      </Routes>
+    </BrowserRouter>
   );
 }
 

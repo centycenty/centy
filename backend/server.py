@@ -55,15 +55,24 @@ class ConnectionManager:
                 except:
                     pass
 
+    async def broadcast_to_all(self, message: str):
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except:
+                pass
+
 manager = ConnectionManager()
 
 # Models
 class User(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     username: str
-    role: str  # 'participant', 'moderator', 'viewer'
+    email: Optional[str] = None
+    role: str  # 'participant', 'moderator', 'viewer', 'admin'
     avatar_url: Optional[str] = None
     is_streaming: bool = False
+    is_banned: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class Competition(BaseModel):
@@ -74,6 +83,8 @@ class Competition(BaseModel):
     max_participants: int = 6
     participants: List[str] = []
     moderator_id: str
+    voting_enabled: bool = False
+    voting_type: str = "stars"  # stars, thumbs, custom
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -83,8 +94,19 @@ class Vote(BaseModel):
     competition_id: str
     participant_id: str
     voter_id: str
-    rating: int  # 1-5 stars
+    vote_type: str = "star"  # star, thumbs_up, thumbs_down, custom
+    rating: int = 5  # 1-5 for stars, 1 for thumbs up, -1 for thumbs down
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+class LiveVotingSession(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    competition_id: str
+    question: str
+    options: List[str] = []
+    is_active: bool = True
+    votes: Dict[str, int] = {}  # option -> count
+    voter_ids: List[str] = []  # Track who voted
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class ChatMessage(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -92,11 +114,21 @@ class ChatMessage(BaseModel):
     user_id: str
     username: str
     message: str
+    is_moderated: bool = False
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+class AdminAction(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    admin_id: str
+    action_type: str  # ban_user, start_voting, moderate_chat, etc.
+    target_id: str
+    details: Dict = {}
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 # Create requests
 class UserCreate(BaseModel):
     username: str
+    email: Optional[str] = None
     role: str
     avatar_url: Optional[str] = None
 
@@ -104,11 +136,24 @@ class CompetitionCreate(BaseModel):
     title: str
     description: str
     moderator_id: str
+    voting_enabled: bool = False
 
 class VoteCreate(BaseModel):
     competition_id: str
     participant_id: str
-    rating: int
+    voter_id: str
+    vote_type: str = "star"
+    rating: int = 5
+
+class LiveVotingCreate(BaseModel):
+    competition_id: str
+    question: str
+    options: List[str]
+
+class LiveVoteSubmit(BaseModel):
+    voting_session_id: str
+    voter_id: str
+    selected_option: str
 
 class MessageCreate(BaseModel):
     competition_id: str
@@ -139,6 +184,30 @@ async def get_user(user_id: str):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return User(**user)
+
+@api_router.post("/users/{user_id}/ban")
+async def ban_user(user_id: str, admin_id: str):
+    result = await db.users.update_one({"id": user_id}, {"$set": {"is_banned": True}})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Log admin action
+    action = AdminAction(admin_id=admin_id, action_type="ban_user", target_id=user_id)
+    await db.admin_actions.insert_one(action.dict())
+    
+    return {"message": "User banned successfully"}
+
+@api_router.post("/users/{user_id}/unban")
+async def unban_user(user_id: str, admin_id: str):
+    result = await db.users.update_one({"id": user_id}, {"$set": {"is_banned": False}})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Log admin action
+    action = AdminAction(admin_id=admin_id, action_type="unban_user", target_id=user_id)
+    await db.admin_actions.insert_one(action.dict())
+    
+    return {"message": "User unbanned successfully"}
 
 # Competition management
 @api_router.post("/competitions", response_model=Competition)
@@ -205,6 +274,12 @@ async def end_competition(competition_id: str):
     competition.end_time = datetime.utcnow()
     await db.competitions.replace_one({"id": competition_id}, competition.dict())
     
+    # End all active voting sessions
+    await db.live_voting.update_many(
+        {"competition_id": competition_id}, 
+        {"$set": {"is_active": False}}
+    )
+    
     # Broadcast to room
     await manager.broadcast_to_room(
         json.dumps({"type": "competition_ended", "competition_id": competition_id}),
@@ -213,18 +288,119 @@ async def end_competition(competition_id: str):
     
     return {"message": "Competition ended"}
 
-# Voting system
+# Live Voting System
+@api_router.post("/voting/create", response_model=LiveVotingSession)
+async def create_voting_session(input: LiveVotingCreate):
+    voting_session = LiveVotingSession(**input.dict())
+    # Initialize votes for each option
+    voting_session.votes = {option: 0 for option in input.options}
+    await db.live_voting.insert_one(voting_session.dict())
+    
+    # Broadcast to all clients in the competition
+    await manager.broadcast_to_room(
+        json.dumps({
+            "type": "voting_started",
+            "voting_session": voting_session.dict()
+        }),
+        input.competition_id
+    )
+    
+    return voting_session
+
+@api_router.post("/voting/submit")
+async def submit_live_vote(input: LiveVoteSubmit):
+    session = await db.live_voting.find_one({"id": input.voting_session_id})
+    if not session:
+        raise HTTPException(status_code=404, detail="Voting session not found")
+    
+    voting_session = LiveVotingSession(**session)
+    
+    if not voting_session.is_active:
+        raise HTTPException(status_code=400, detail="Voting session is not active")
+    
+    # Check if user already voted
+    if input.voter_id in voting_session.voter_ids:
+        raise HTTPException(status_code=400, detail="User has already voted")
+    
+    # Update vote count
+    if input.selected_option in voting_session.votes:
+        voting_session.votes[input.selected_option] += 1
+        voting_session.voter_ids.append(input.voter_id)
+        
+        await db.live_voting.replace_one({"id": input.voting_session_id}, voting_session.dict())
+        
+        # Broadcast updated results
+        await manager.broadcast_to_room(
+            json.dumps({
+                "type": "voting_update",
+                "voting_session": voting_session.dict()
+            }),
+            voting_session.competition_id
+        )
+        
+        return {"message": "Vote submitted successfully"}
+    else:
+        raise HTTPException(status_code=400, detail="Invalid voting option")
+
+@api_router.post("/voting/{session_id}/end")
+async def end_voting_session(session_id: str):
+    result = await db.live_voting.update_one(
+        {"id": session_id}, 
+        {"$set": {"is_active": False}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Voting session not found")
+    
+    session = await db.live_voting.find_one({"id": session_id})
+    voting_session = LiveVotingSession(**session)
+    
+    # Broadcast voting ended
+    await manager.broadcast_to_room(
+        json.dumps({
+            "type": "voting_ended",
+            "voting_session": voting_session.dict()
+        }),
+        voting_session.competition_id
+    )
+    
+    return {"message": "Voting session ended"}
+
+@api_router.get("/voting/active/{competition_id}")
+async def get_active_voting_sessions(competition_id: str):
+    sessions = await db.live_voting.find({
+        "competition_id": competition_id,
+        "is_active": True
+    }).to_list(100)
+    return [LiveVotingSession(**session) for session in sessions]
+
+@api_router.get("/voting/{session_id}", response_model=LiveVotingSession)
+async def get_voting_session(session_id: str):
+    session = await db.live_voting.find_one({"id": session_id})
+    if not session:
+        raise HTTPException(status_code=404, detail="Voting session not found")
+    return LiveVotingSession(**session)
+
+# Traditional voting system (stars)
 @api_router.post("/votes", response_model=Vote)
 async def cast_vote(input: VoteCreate):
     # Check if user already voted for this participant
     existing_vote = await db.votes.find_one({
         "competition_id": input.competition_id,
         "participant_id": input.participant_id,
-        "voter_id": input.dict().get("voter_id")  # We'll need to add voter_id to the model
+        "voter_id": input.voter_id
     })
     
-    vote = Vote(**input.dict())
-    await db.votes.insert_one(vote.dict())
+    if existing_vote:
+        # Update existing vote
+        await db.votes.update_one(
+            {"id": existing_vote["id"]},
+            {"$set": {"rating": input.rating, "vote_type": input.vote_type}}
+        )
+        vote = Vote(**{**existing_vote, "rating": input.rating, "vote_type": input.vote_type})
+    else:
+        # Create new vote
+        vote = Vote(**input.dict())
+        await db.votes.insert_one(vote.dict())
     
     # Broadcast vote update
     await manager.broadcast_to_room(
@@ -279,6 +455,43 @@ async def get_messages(competition_id: str, limit: int = 100):
     messages = await db.messages.find({"competition_id": competition_id}).sort("timestamp", -1).limit(limit).to_list(limit)
     messages.reverse()  # Return in chronological order
     return [ChatMessage(**msg) for msg in messages]
+
+@api_router.post("/messages/{message_id}/moderate")
+async def moderate_message(message_id: str, admin_id: str):
+    result = await db.messages.update_one(
+        {"id": message_id}, 
+        {"$set": {"is_moderated": True}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Message not found")
+    
+    # Log admin action
+    action = AdminAction(admin_id=admin_id, action_type="moderate_message", target_id=message_id)
+    await db.admin_actions.insert_one(action.dict())
+    
+    return {"message": "Message moderated successfully"}
+
+# Admin analytics
+@api_router.get("/admin/stats")
+async def get_admin_stats():
+    total_users = await db.users.count_documents({})
+    active_competitions = await db.competitions.count_documents({"status": "active"})
+    total_votes = await db.votes.count_documents({})
+    total_messages = await db.messages.count_documents({})
+    banned_users = await db.users.count_documents({"is_banned": True})
+    
+    return {
+        "total_users": total_users,
+        "active_competitions": active_competitions,
+        "total_votes": total_votes,
+        "total_messages": total_messages,
+        "banned_users": banned_users
+    }
+
+@api_router.get("/admin/actions", response_model=List[AdminAction])
+async def get_admin_actions(limit: int = 100):
+    actions = await db.admin_actions.find().sort("timestamp", -1).limit(limit).to_list(limit)
+    return [AdminAction(**action) for action in actions]
 
 # WebSocket endpoint
 @app.websocket("/ws/{competition_id}")
