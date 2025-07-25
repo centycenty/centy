@@ -269,7 +269,7 @@ async def start_competition(competition_id: str):
     
     # Broadcast to room
     await manager.broadcast_to_room(
-        json.dumps({"type": "competition_started", "competition_id": competition_id}),
+        safe_json_dumps({"type": "competition_started", "competition_id": competition_id}),
         competition_id
     )
     
