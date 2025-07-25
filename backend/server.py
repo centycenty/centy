@@ -368,7 +368,7 @@ async def end_voting_session(session_id: str):
     
     # Broadcast voting ended
     await manager.broadcast_to_room(
-        json.dumps({
+        safe_json_dumps({
             "type": "voting_ended",
             "voting_session": voting_session.dict()
         }),
